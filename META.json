@@ -1,0 +1,35 @@
+{
+    "name": "format_x",
+    "abstract": "A polymorphic, variadic string formatting fuction which takes named parameters",
+    "description": "This `format_x` function produces output formatted according to a format string (in a style similar to the C function `sprintf`). This `format_x` is an extension of the built-in `format` function, as it is string interpolation with named format parameters.",
+    "version": "0.0.1",
+    "maintainer": "Melanie Plageman <melanieplageman@gmail.com>",
+    "license": "mit",
+    "provides": {
+        "format_x": {
+            "abstract": "A polymorphic, variadic string formatting function which takes named parameters",
+            "file": "sql/format_x.sql",
+            "docfile": "doc/format_x.md",
+            "version": "0.0.1"
+        }
+    },
+    "tags": [ "format", "string interpolation", "named parameters", "polymorphic", "variadic" ],
+    "release_status": "unstable",
+    "resources": {
+        "bugtracker": {
+            "web": "http://github.com/melanieplageman/format_x/issues"
+        },
+        "repository": {
+          "url":  "git://github.com/melanieplageman/format_x.git",
+          "web":  "http://github.com/melanieplageman/format_x",
+          "type": "git"
+        }
+    },
+
+    "generated_by": "Melanie Plageman",
+
+    "meta-spec": {
+        "version": "1.0.0",
+        "url": "http://pgxn.org/meta/spec.txt"
+    }
+}

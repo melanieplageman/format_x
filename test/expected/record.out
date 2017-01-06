@@ -1,0 +1,126 @@
+CREATE EXTENSION IF NOT EXISTS format_x;
+NOTICE:  extension "format_x" already exists, skipping
+-- Composite type representing a table --
+CREATE TABLE nation(name TEXT, code CHAR(2), population INT);
+INSERT INTO nation VALUES
+  ('United States', 'US', 1000),
+  ('Canada', 'CA', 30),
+  ('Mexico', 'MX', 40);
+SELECT format_x('Hello %(name)s', nation) FROM nation;
+      format_x       
+---------------------
+ Hello United States
+ Hello Canada
+ Hello Mexico
+(3 rows)
+
+SELECT format_x('Hello %(name)s <%(code)s>', nation) FROM nation;
+         format_x         
+--------------------------
+ Hello United States <US>
+ Hello Canada <CA>
+ Hello Mexico <MX>
+(3 rows)
+
+SELECT format_x('%(name)s: %(population)s', nation) FROM nation;
+      format_x       
+---------------------
+ United States: 1000
+ Canada: 30
+ Mexico: 40
+(3 rows)
+
+SELECT format_x('%2(name)s %1(name)s',
+  (SELECT nation FROM nation WHERE code = 'US'),
+  (SELECT nation FROM nation WHERE code = 'CA')
+);
+       format_x       
+----------------------
+ Canada United States
+(1 row)
+
+SELECT format_x('%2(name)s %1(name)s', VARIADIC array_agg(nation)) FROM nation;
+       format_x       
+----------------------
+ Canada United States
+(1 row)
+
+SELECT format_x('SELECT * FROM nation WHERE code = %(code)I',
+  nation) FROM nation;
+                format_x                
+----------------------------------------
+ SELECT * FROM nation WHERE code = "US"
+ SELECT * FROM nation WHERE code = "CA"
+ SELECT * FROM nation WHERE code = "MX"
+(3 rows)
+
+SELECT format_x('SELECT * FROM nation WHERE code = %(code)L',
+  nation) FROM nation;
+                format_x                
+----------------------------------------
+ SELECT * FROM nation WHERE code = 'US'
+ SELECT * FROM nation WHERE code = 'CA'
+ SELECT * FROM nation WHERE code = 'MX'
+(3 rows)
+
+-- Composite type with missing attribute --
+SELECT format_x('%(size)s', ROW('United Kingdom', 'UK', 200)::nation);
+ERROR:  attribute "size" does not exist
+-- Composite type literal with NULL attribute --
+SELECT format_x('%(name)s %(code)I %(population)L',
+  ROW('United Kingdom', 'UK', 200)::nation);
+         format_x          
+---------------------------
+ United Kingdom "UK" '200'
+(1 row)
+
+SELECT format_x('%(name)s %(code)I %(population)L',
+  ROW(NULL, 'UK', 200)::nation);
+  format_x   
+-------------
+  "UK" '200'
+(1 row)
+
+SELECT format_x('%(name)s %(code)I %(population)L',
+  ROW('United Kingdom', NULL, 200)::nation);
+ERROR:  null values cannot be formatted as an SQL identifier
+SELECT format_x('%(name)s %(code)I %(population)L',
+  ROW('United Kingdom', 'UK', NULL)::nation);
+         format_x         
+--------------------------
+ United Kingdom "UK" NULL
+(1 row)
+
+-- Composite type with composite type attribute --
+CREATE TYPE pair AS (n1 nation, n2 nation);
+SELECT format_x('%(n1.code)I, %(n2.name)s', ROW(
+  (SELECT nation FROM nation WHERE code = 'US'),
+  (SELECT nation FROM nation WHERE code = 'CA')
+)::pair);
+   format_x   
+--------------
+ "US", Canada
+(1 row)
+
+SELECT format_x('%(n1.code)I, %(n2.name)s', ROW(
+  (SELECT nation FROM nation WHERE code = 'US'), NULL
+)::pair);
+ERROR:  null arguments cannot be looked up in, so cannot be passed for named parameters
+SELECT format_x('%(n1.code)I, %(n2)s', ROW(
+  (SELECT nation FROM nation WHERE code = 'US'),
+  (SELECT nation FROM nation WHERE code = 'CA')
+)::pair);
+       format_x       
+----------------------
+ "US", (Canada,CA,30)
+(1 row)
+
+SELECT format_x('%(n1.code)I, %(n2)L', ROW(
+  (SELECT nation FROM nation WHERE code = 'US'),
+  (SELECT nation FROM nation WHERE code = 'CA')
+)::pair);
+        format_x        
+------------------------
+ "US", '(Canada,CA,30)'
+(1 row)
+

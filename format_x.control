@@ -1,0 +1,6 @@
+# format extension
+comment = 'A polymorphic, variadic string formatting function which takes named parameters'
+default_version = '0.0.1'
+# requires =
+module_pathname = '$libdir/format_x'
+relocatable = true

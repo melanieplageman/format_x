@@ -1,0 +1,70 @@
+CREATE EXTENSION IF NOT EXISTS format_x;
+NOTICE:  extension "format_x" already exists, skipping
+CREATE EXTENSION IF NOT EXISTS hstore;
+-- Hstore --
+SELECT format_x('Hello %(name)s', hstore(ARRAY[
+  'name', 'United States', 'code', 'US', 'population', '1000'
+]));
+      format_x       
+---------------------
+ Hello United States
+(1 row)
+
+SELECT format_x('Hello %(name)s <%(code)s>', hstore(ARRAY[
+  'name', 'United States', 'code', 'US', 'population', '1000'
+]));
+         format_x         
+--------------------------
+ Hello United States <US>
+(1 row)
+
+SELECT format_x('%(name)s: %(population)s', hstore(ARRAY[
+  'name', 'United States', 'code', 'US', 'population', '1000'
+]));
+      format_x       
+---------------------
+ United States: 1000
+(1 row)
+
+SELECT format_x('%2(name)s %1(name)s', hstore(ARRAY[
+  'name', 'United States', 'code', 'US', 'population', '1000'
+]), hstore(ARRAY[
+  'name', 'Canada', 'code', 'CA', 'population', '30'
+]));
+       format_x       
+----------------------
+ Canada United States
+(1 row)
+
+SELECT format_x('%2(name)s %1(name)s', VARIADIC ARRAY[
+  hstore(ARRAY[
+    'name', 'United States', 'code', 'US', 'population', '1000'
+  ]),
+  hstore(ARRAY[
+    'name', 'Canada', 'code', 'CA', 'population', '30'
+  ])
+]);
+       format_x       
+----------------------
+ Canada United States
+(1 row)
+
+SELECT format_x('SELECT * FROM nation WHERE code = %(code)I', hstore(ARRAY[
+  'name', 'United States', 'code', 'US', 'population', '1000'
+]));
+                format_x                
+----------------------------------------
+ SELECT * FROM nation WHERE code = "US"
+(1 row)
+
+SELECT format_x('SELECT * FROM nation WHERE code = %(code)L', hstore(ARRAY[
+  'name', 'United States', 'code', 'US', 'population', '1000'
+]));
+                format_x                
+----------------------------------------
+ SELECT * FROM nation WHERE code = 'US'
+(1 row)
+
+-- Hstore with missing key --
+SELECT format_x('%(size)s', hstore(ARRAY['name', 'United Kingdom']));
+ERROR:  key "size" does not exist
