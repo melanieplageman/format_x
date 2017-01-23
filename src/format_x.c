@@ -338,11 +338,8 @@ void jsonb_lookup(Object *object, char *key, int keylen) {
 
   v = findJsonbValueFromContainerLen(&jb->root, JB_FOBJECT, key, keylen);
   if (v == NULL) {
-    char *keydbg = palloc(keylen + 1);
-    strncpy(keydbg, key, keylen);
-    keydbg[keylen] = '\0';
     ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                    errmsg("key \"%s\" does not exist", keydbg)));
+                    errmsg("key \"%*s\" does not exist", keylen, key)));
   }
 
   switch (v->type) {
@@ -395,11 +392,8 @@ void hstore_lookup(Object *object, char *key, int keylen) {
   
   /* If key is not found, generate error */
   if (idx < 0) {
-    char *keydbg = palloc(keylen + 1);
-    strncpy(keydbg, key, keylen);
-    keydbg[keylen] = '\0';
     ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                    errmsg("key \"%s\" does not exist", keydbg)));
+                    errmsg("key \"%*s\" does not exist", keylen, key)));
   }
 
   if (HSTORE_VALISNULL(ARRPTR(hs), idx)) {
