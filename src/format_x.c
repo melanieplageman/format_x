@@ -19,6 +19,9 @@ PG_FUNCTION_INFO_V1(format_x);
 typedef HStore *(*hstoreUpgradeF)(Datum);
 typedef int (*hstoreFindKeyF)(HStore *, int *, char *, int);
 
+/* This struct holds data about each format specifier in the format string */ 
+/* After processing and appending the result to the output buffer, it is overwritten by the next format specifier's data
+ * Note that the format string data is stored elsewhere */
 typedef struct {
   int parameter; // a 0 indicates no parameter
   char *key; // NULL indicates no key
@@ -27,9 +30,12 @@ typedef struct {
   int width;
   int precision;
   char type;
-} FormatInfo;
+} FormatSpecifierData;
 
+/* This struct holds both info about the format args */
+/* as well as the arg data in the case of a variadic argument */
 typedef struct {
+  // Variadic info
   bool funcvariadic;
 
   int nargs;
@@ -39,7 +45,13 @@ typedef struct {
   Datum *elements;
   bool *nulls;
   Oid element_type;
-} ArgumentData;
+
+  // HStore info
+  void *filehandle;
+  hstoreFindKeyF hstoreFindKey;
+  hstoreUpgradeF hstoreUpgrade;
+  Oid hstoreOid;
+} FormatargInfoData;
 
 typedef struct {
   Datum item;
@@ -48,30 +60,30 @@ typedef struct {
 } Object;
 
 /* Returns a formatted string when provided with named arguments */
-void format_engine(FormatInfo *info, StringInfoData *output, ArgumentData *argdata);
+void format_engine(FormatSpecifierData *specifierdata, StringInfoData *output, FormatargInfoData *arginfodata);
 
 /* Lookup an attribute by key (with length keylen) in object */
 /* The result and result type is returned by rewriting members of object */
-void format_lookup(Object *object, char *key, int keylen);
+void format_lookup(Object *object, FormatargInfoData *arginfodata, char *key, int keylen);
 void record_lookup(Object *object, char *key, int keylen);
 void jsonb_lookup(Object *object, char *key, int keylen);
 void json_lookup(Object *object, char *key, int keylen);
-void hstore_lookup(Object *object, char *key, int keylen);
+void hstore_lookup(Object *object, FormatargInfoData *arginfodata, char *key, int keylen);
 
 /* Parse the optional portions of the format specifier */
 char *option_format(StringInfoData *output, char *string, int length, int width, bool align_to_left);
 
-/* Populate ArgumentData from FunctionCallInfo; copied from text_format() */
-void make_argument_data(ArgumentData *argdata, FunctionCallInfo fcinfo);
+/* Populate FormatargInfoData from FunctionCallInfo; copied from text_format() */
+void make_argument_data(FormatargInfoData *arginfodata, FunctionCallInfo fcinfo);
 
-/* Consume an ArgumentData and a position and return the datum at that position */
-Datum getarg(ArgumentData *argdata, int parameter, Oid *typid, bool *isNull);
+/* Consume an FormatargInfoData and a position and return the datum at that position */
+Datum getarg(FormatargInfoData *arginfodata, int parameter, Oid *typid, bool *isNull);
 
 /* Copied from text_format_parse_digits() */
 static inline void accumulate_number(int *old, char c);
 
 /* Check if typid belongs to hstore as hstore's oid is not constant */
-bool is_hstore(Oid typid);
+bool is_hstore(Oid typid, FormatargInfoData *arginfodata);
 
 /* findJsonbValueFromContainerLen() is static and must be copied here */
 /* findJsonbValueFromContainerLen() is a findJsonbValueFromContainer() wrapper that sets up JsonbValue key string. */
@@ -98,15 +110,15 @@ typedef enum _format_state_t {
   FORMAT_UNEXPECTED,
 } format_state_t;
 
-format_state_t read_parameter_0(char* cp, FormatInfo *info);
-format_state_t read_parameter_1(char *cp, FormatInfo *info);
-format_state_t read_parameter_2(char *cp, FormatInfo *info);
-format_state_t read_parameter_3(char *cp, FormatInfo *info);
-format_state_t read_flags(char *cp, FormatInfo *info);
-format_state_t read_width_0(char *cp, FormatInfo *info);
-format_state_t read_width_1(char *cp, FormatInfo *info);
-format_state_t read_precision_0(char *cp, FormatInfo *info);
-format_state_t read_precision_1(char *cp, FormatInfo *info);
+format_state_t read_parameter_0(char* cp, FormatSpecifierData *specifierdata);
+format_state_t read_parameter_1(char *cp, FormatSpecifierData *specifierdata);
+format_state_t read_parameter_2(char *cp, FormatSpecifierData *specifierdata);
+format_state_t read_parameter_3(char *cp, FormatSpecifierData *specifierdata);
+format_state_t read_flags(char *cp, FormatSpecifierData *specifierdata);
+format_state_t read_width_0(char *cp, FormatSpecifierData *specifierdata);
+format_state_t read_width_1(char *cp, FormatSpecifierData *specifierdata);
+format_state_t read_precision_0(char *cp, FormatSpecifierData *specifierdata);
+format_state_t read_precision_1(char *cp, FormatSpecifierData *specifierdata);
 
 Datum format_x(PG_FUNCTION_ARGS) {
   text *format_string_text;
@@ -114,16 +126,21 @@ Datum format_x(PG_FUNCTION_ARGS) {
   format_state_t s = FORMAT_NORMAL;
   format_state_t next;
   int last_parameter = 0;
-  ArgumentData argdata = {
+  FormatargInfoData arginfodata = {
     .fcinfo = fcinfo };
-  FormatInfo info;
+  FormatSpecifierData specifierdata;
   StringInfoData output;
 
   /* When format string is null, immediately return null */
   if (PG_ARGISNULL(0))
     PG_RETURN_NULL();
 
-  make_argument_data(&argdata, fcinfo);
+  make_argument_data(&arginfodata, fcinfo);
+
+  arginfodata.filehandle = NULL;
+  arginfodata.hstoreFindKey = NULL;
+  arginfodata.hstoreUpgrade = NULL;
+  arginfodata.hstoreOid = InvalidOid;
 
   format_string_text = PG_GETARG_TEXT_PP(0);
   startp = VARDATA_ANY(format_string_text);
@@ -146,39 +163,39 @@ Datum format_x(PG_FUNCTION_ARGS) {
           appendStringInfoCharMacro(&output, *cp);
           next = FORMAT_NORMAL;
         } else {
-          info.parameter = 0;
-          info.key = NULL;
-          info.keylen = 0;
-          info.flag = 0;
-          info.width = 0;
-          info.precision = 0;
+          specifierdata.parameter = 0;
+          specifierdata.key = NULL;
+          specifierdata.keylen = 0;
+          specifierdata.flag = 0;
+          specifierdata.width = 0;
+          specifierdata.precision = 0;
 
-          next = read_parameter_0(cp, &info);
+          next = read_parameter_0(cp, &specifierdata);
         }
         break;
       case FORMAT_PARAMETER_1:
-        next = read_parameter_1(cp, &info);
+        next = read_parameter_1(cp, &specifierdata);
         break;
       case FORMAT_PARAMETER_2:
-        next = read_parameter_2(cp, &info);
+        next = read_parameter_2(cp, &specifierdata);
         break;
       case FORMAT_PARAMETER_3:
-        next = read_parameter_3(cp, &info);
+        next = read_parameter_3(cp, &specifierdata);
         break;
       case FORMAT_FLAGS:
-        next = read_flags(cp, &info);
+        next = read_flags(cp, &specifierdata);
         break;
       case FORMAT_WIDTH_0:
-        next = read_width_0(cp, &info);
+        next = read_width_0(cp, &specifierdata);
         break;
       case FORMAT_WIDTH_1:
-        next = read_width_1(cp, &info);
+        next = read_width_1(cp, &specifierdata);
         break;
       case FORMAT_PRECISION_0:
-        next = read_precision_0(cp, &info);
+        next = read_precision_0(cp, &specifierdata);
         break;
       case FORMAT_PRECISION_1:
-        next = read_precision_1(cp, &info);
+        next = read_precision_1(cp, &specifierdata);
         break;
       default:
         next = FORMAT_UNEXPECTED;
@@ -189,18 +206,18 @@ Datum format_x(PG_FUNCTION_ARGS) {
       elog(ERROR, "ERROR");
 
     if (next == FORMAT_DONE) {
-      if (info.parameter != 0) {
-        last_parameter = info.parameter;
+      if (specifierdata.parameter != 0) {
+        last_parameter = specifierdata.parameter;
       } else {
-        if (info.key == NULL || info.keylen == 0) {
-          info.parameter = ++last_parameter;
+        if (specifierdata.key == NULL || specifierdata.keylen == 0) {
+          specifierdata.parameter = ++last_parameter;
         } else {
           if (last_parameter == 0)
             last_parameter++;
-          info.parameter = last_parameter;
+          specifierdata.parameter = last_parameter;
         }
       }
-      format_engine(&info, &output, &argdata);
+      format_engine(&specifierdata, &output, &arginfodata);
       next = FORMAT_NORMAL;
     }
 
@@ -218,7 +235,7 @@ Datum format_x(PG_FUNCTION_ARGS) {
   PG_RETURN_TEXT_P(output_text);
 }
 
-void format_engine(FormatInfo *info, StringInfoData *output, ArgumentData *argdata) {
+void format_engine(FormatSpecifierData *specifierdata, StringInfoData *output, FormatargInfoData *arginfodata) {
   Object object;
   bool typIsVarlena;
   FmgrInfo typoutputfinfo;
@@ -227,19 +244,19 @@ void format_engine(FormatInfo *info, StringInfoData *output, ArgumentData *argda
   int vallen;
 
   object.isNull = false;
-  object.item = getarg(argdata, info->parameter, &object.typid, &object.isNull);
+  object.item = getarg(arginfodata, specifierdata->parameter, &object.typid, &object.isNull);
 
   /* Handle lookup if there is a key */
-  if (info->key != NULL || info->keylen != 0) {
-    char *keycpy = palloc(info->keylen + 1);
-    keycpy[info->keylen] = '\0';
-    memcpy(keycpy, info->key, info->keylen);
+  if (specifierdata->key != NULL || specifierdata->keylen != 0) {
+    char *keycpy = palloc(specifierdata->keylen + 1);
+    keycpy[specifierdata->keylen] = '\0';
+    memcpy(keycpy, specifierdata->key, specifierdata->keylen);
 
     size_t numchars = 0;
-    for (size_t i = 0; i <= info->keylen; i++) {
-      if (keycpy[i] == '.' || i == info->keylen) {
+    for (size_t i = 0; i <= specifierdata->keylen; i++) {
+      if (keycpy[i] == '.' || i == specifierdata->keylen) {
         keycpy[i] = '\0';
-        format_lookup(&object, keycpy, numchars);
+        format_lookup(&object, arginfodata, keycpy, numchars);
         keycpy = keycpy + numchars + 1;
         numchars = 0;
       }
@@ -250,21 +267,21 @@ void format_engine(FormatInfo *info, StringInfoData *output, ArgumentData *argda
   }
 
   if (object.isNull) {
-    if (info->type == 'I') {
+    if (specifierdata->type == 'I') {
       ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("null values cannot be formatted as an SQL identifier")));
     }
-    else if (info->type == 'L') {
+    else if (specifierdata->type == 'L') {
       val = "NULL";
-      info->type = 's';
+      specifierdata->type = 's';
     }
-    else if (info->type == 's') {
+    else if (specifierdata->type == 's') {
       val = "";
     }
   }
   else {
     /* For floats, trim if precision (precision is only formatting done before conversion to string) */
-    if (info->precision != 0 && (object.typid == FLOAT4OID || object.typid == FLOAT8OID)) {
-      object.item = DirectFunctionCall2(numeric_round, object.item, info->precision);
+    if (specifierdata->precision != 0 && (object.typid == FLOAT4OID || object.typid == FLOAT8OID)) {
+      object.item = DirectFunctionCall2(numeric_round, object.item, specifierdata->precision);
     }
 
     /* Get the appropriate typOutput function */
@@ -285,23 +302,23 @@ void format_engine(FormatInfo *info, StringInfoData *output, ArgumentData *argda
   string[vallen] = '\0';
   int length = vallen;
 
-  if (info->type == 'I') {
+  if (specifierdata->type == 'I') {
     /* quote_identifier() sometimes returns a palloc'd string and sometimes returns the original string */
     string = (char *) quote_identifier(string);
     length = strlen(string);
   }
-  else if (info->type == 'L') {
+  else if (specifierdata->type == 'L') {
     string = (char *) quote_literal_cstr(string);
     length = strlen(string);
   }
 
-  string = option_format(output, string, length, info->width, info->flag);
-  if (info->type == 'L') {
+  string = option_format(output, string, length, specifierdata->width, specifierdata->flag);
+  if (specifierdata->type == 'L') {
     pfree(string);
   }
 }
 
-void format_lookup(Object *object, char *key, int keylen) {
+void format_lookup(Object *object, FormatargInfoData *arginfodata, char *key, int keylen) {
   if (key == NULL || keylen == 0)
     return;
 
@@ -318,8 +335,8 @@ void format_lookup(Object *object, char *key, int keylen) {
     jsonb_lookup(object, key, keylen);
   }
 
-  else if (is_hstore(object->typid)) {
-    hstore_lookup(object, key, keylen);
+  else if (is_hstore(object->typid, arginfodata)) {
+    hstore_lookup(object, arginfodata, key, keylen);
   }
 
   else {
@@ -368,7 +385,12 @@ void jsonb_lookup(Object *object, char *key, int keylen) {
   }
 }
 
-bool is_hstore(Oid typid) {
+bool is_hstore(Oid typid, FormatargInfoData *arginfodata) {
+  /* If HStore has been previously detected, skip lookup for oid */
+  if (arginfodata->hstoreOid != InvalidOid) {
+    return arginfodata->hstoreOid == typid;
+  }
+
   bool typIsVarlena;
   Oid typoutputfunc;
   FmgrInfo typoutputfinfo;
@@ -377,19 +399,28 @@ bool is_hstore(Oid typid) {
   getTypeOutputInfo(typid, &typoutputfunc, &typIsVarlena);
   fmgr_info(typoutputfunc, &typoutputfinfo);
 
-  hstore_out = load_external_function("hstore", "hstore_out", false, NULL);
+  hstore_out = load_external_function("hstore", "hstore_out", false, &arginfodata->filehandle);
 
-  return typoutputfinfo.fn_addr == hstore_out;
+  if (typoutputfinfo.fn_addr == hstore_out) {
+    arginfodata->hstoreOid = typid;
+    return true;
+  }
+  
+  return false;
 }
 
-void hstore_lookup(Object *object, char *key, int keylen) {
-  hstoreUpgradeF hstoreUpgrade = (hstoreUpgradeF) load_external_function(
-      "hstore", "hstoreUpgrade", true, NULL);
-  HStore *hs = hstoreUpgrade(object->item);
+void hstore_lookup(Object *object, FormatargInfoData *arginfodata, char *key, int keylen) {
+  if (arginfodata->hstoreUpgrade == NULL) {
+    arginfodata->hstoreUpgrade = (hstoreUpgradeF) lookup_external_function(arginfodata->filehandle, "hstoreUpgrade");
+  }
+  HStore *hs = arginfodata->hstoreUpgrade(object->item);
 
-  int (*hstoreFindKey) (HStore*, int*, char*, int) = (int (*)(HStore*, int*, char*, int)) load_external_function("hstore", "hstoreFindKey", true, NULL);
-  int idx = hstoreFindKey(hs, NULL, key, keylen);
-  
+  if (arginfodata->hstoreFindKey == NULL) {
+    int (*hstoreFindKey) (HStore*, int*, char*, int) = (int (*)(HStore*, int*, char*, int)) lookup_external_function(arginfodata->filehandle, "hstoreFindKey");
+    arginfodata->hstoreFindKey = hstoreFindKey;
+  }
+  int idx = arginfodata->hstoreFindKey(hs, NULL, key, keylen);
+
   /* If key is not found, generate error */
   if (idx < 0) {
     ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -427,26 +458,26 @@ char *option_format(StringInfoData *output, char *string, int length, int width,
   return string;
 }
 
-Datum getarg(ArgumentData *argdata, int parameter, Oid *typid, bool *isNull) {
-  FunctionCallInfo fcinfo = argdata->fcinfo;
+Datum getarg(FormatargInfoData *arginfodata, int parameter, Oid *typid, bool *isNull) {
+  FunctionCallInfo fcinfo = arginfodata->fcinfo;
   Datum arg;
 
-  if (parameter >= argdata->nargs) {
+  if (parameter >= arginfodata->nargs) {
     ereport(ERROR,
                   (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                    errmsg("too few arguments for format_x()")));
   }
 
   /* Get the value and type of the selected argument  */
-  if (!argdata->funcvariadic) {
+  if (!arginfodata->funcvariadic) {
     arg = PG_GETARG_DATUM(parameter);
     *isNull = PG_ARGISNULL(parameter);
-    *typid = get_fn_expr_argtype(argdata->fcinfo->flinfo, parameter);
+    *typid = get_fn_expr_argtype(arginfodata->fcinfo->flinfo, parameter);
   }
   else {
-    arg = argdata->elements[parameter - 1];
-    *isNull = argdata->nulls[parameter - 1];
-    *typid = argdata->element_type;
+    arg = arginfodata->elements[parameter - 1];
+    *isNull = arginfodata->nulls[parameter - 1];
+    *typid = arginfodata->element_type;
   }
 
   if (!OidIsValid(*typid)) {
@@ -458,7 +489,7 @@ Datum getarg(ArgumentData *argdata, int parameter, Oid *typid, bool *isNull) {
 
 
 format_state_t
-read_parameter_0(char* cp, FormatInfo *info) {
+read_parameter_0(char* cp, FormatSpecifierData *specifierdata) {
   switch (*cp) {
     case '0':
       /* Explicit 0 for argument index is immediately refused */
@@ -469,25 +500,25 @@ read_parameter_0(char* cp, FormatInfo *info) {
     case '1': case '2': case '3':
     case '4': case '5': case '6':
     case '7': case '8': case '9':
-      info->parameter = *cp - '0';
+      specifierdata->parameter = *cp - '0';
       return FORMAT_PARAMETER_1;
 
     case '(':
-      info->key = cp + 1;
+      specifierdata->key = cp + 1;
       return FORMAT_PARAMETER_2;
 
     case '-':
-      info->flag = true;
+      specifierdata->flag = true;
       return FORMAT_FLAGS;
 
     case '.':
-      info->precision = 0;
+      specifierdata->precision = 0;
       return FORMAT_PRECISION_1;
 
     case 's':
     case 'I':
     case 'L':
-      info->type = *cp;
+      specifierdata->type = *cp;
       return FORMAT_DONE;
   }
 
@@ -499,33 +530,33 @@ read_parameter_0(char* cp, FormatInfo *info) {
 }
 
 format_state_t
-read_parameter_1(char *cp, FormatInfo *info) {
+read_parameter_1(char *cp, FormatSpecifierData *specifierdata) {
   switch (*cp) {
     case '0': case '1': case '2': case '3':
     case '4': case '5': case '6':
     case '7': case '8': case '9':
-      accumulate_number(&info->parameter, *cp);
+      accumulate_number(&specifierdata->parameter, *cp);
       return FORMAT_PARAMETER_1;
 
     case '(':
-      info->key = cp + 1;
+      specifierdata->key = cp + 1;
       return FORMAT_PARAMETER_2;
 
     case '$':
       return FORMAT_PARAMETER_3;
 
     case '.':
-      info->width = info->parameter;
-      info->parameter = 0;
-      info->precision = 0;
+      specifierdata->width = specifierdata->parameter;
+      specifierdata->parameter = 0;
+      specifierdata->precision = 0;
       return FORMAT_PRECISION_1;
 
     case 's':
     case 'I':
     case 'L':
-      info->width = info->parameter;
-      info->parameter = 0;
-      info->type = *cp;
+      specifierdata->width = specifierdata->parameter;
+      specifierdata->parameter = 0;
+      specifierdata->type = *cp;
       return FORMAT_DONE;
   }
 
@@ -538,7 +569,7 @@ read_parameter_1(char *cp, FormatInfo *info) {
 }
 
 format_state_t
-read_parameter_2(char *cp, FormatInfo *info) {
+read_parameter_2(char *cp, FormatSpecifierData *specifierdata) {
   switch (*cp) {
     case ')':
       return FORMAT_PARAMETER_3;
@@ -549,33 +580,33 @@ read_parameter_2(char *cp, FormatInfo *info) {
       return FORMAT_UNEXPECTED;
 
     default:
-      info->keylen++;
+      specifierdata->keylen++;
   }
 
   return FORMAT_PARAMETER_2;
 }
 
 format_state_t
-read_parameter_3(char *cp, FormatInfo *info) {
+read_parameter_3(char *cp, FormatSpecifierData *specifierdata) {
   switch (*cp) {
     case '-':
-      info->flag = true;
+      specifierdata->flag = true;
       return FORMAT_FLAGS;
 
     case '1': case '2': case '3':
     case '4': case '5': case '6':
     case '7': case '8': case '9':
-      info->width = *cp - '0';
+      specifierdata->width = *cp - '0';
       return FORMAT_WIDTH_1;
 
     case '.':
-      info->precision = 0;
+      specifierdata->precision = 0;
       return FORMAT_PRECISION_1;
 
     case 's':
     case 'I':
     case 'L':
-      info->type = *cp;
+      specifierdata->type = *cp;
       return FORMAT_DONE;
   }
 
@@ -588,26 +619,26 @@ read_parameter_3(char *cp, FormatInfo *info) {
 }
 
 format_state_t
-read_flags(char *cp, FormatInfo *info) {
+read_flags(char *cp, FormatSpecifierData *specifierdata) {
   switch (*cp) {
     case '-':
-      info->flag = true;
+      specifierdata->flag = true;
       return FORMAT_FLAGS;
 
     case '1': case '2': case '3':
     case '4': case '5': case '6':
     case '7': case '8': case '9':
-      info->width = *cp - '0';
+      specifierdata->width = *cp - '0';
       return FORMAT_WIDTH_1;
 
     case '.':
-      info->precision = 0;
+      specifierdata->precision = 0;
       return FORMAT_PRECISION_1;
 
     case 's':
     case 'I':
     case 'L':
-      info->type = *cp;
+      specifierdata->type = *cp;
       return FORMAT_DONE;
   }
 
@@ -620,22 +651,22 @@ read_flags(char *cp, FormatInfo *info) {
 }
 
 format_state_t
-read_width_0(char *cp, FormatInfo *info) {
+read_width_0(char *cp, FormatSpecifierData *specifierdata) {
   switch (*cp) {
     case '1': case '2': case '3':
     case '4': case '5': case '6':
     case '7': case '8': case '9':
-      info->width = *cp - '0';
+      specifierdata->width = *cp - '0';
       return FORMAT_WIDTH_1;
 
     case '.':
-      info->precision = 0;
+      specifierdata->precision = 0;
       return FORMAT_PRECISION_1;
 
     case 's':
     case 'I':
     case 'L':
-      info->type = *cp;
+      specifierdata->type = *cp;
       return FORMAT_DONE;
   }
 
@@ -648,22 +679,22 @@ read_width_0(char *cp, FormatInfo *info) {
 }
 
 format_state_t
-read_width_1(char *cp, FormatInfo *info) {
+read_width_1(char *cp, FormatSpecifierData *specifierdata) {
   switch (*cp) {
     case '0': case '1': case '2': case '3':
     case '4': case '5': case '6':
     case '7': case '8': case '9':
-      accumulate_number(&info->width, *cp);
+      accumulate_number(&specifierdata->width, *cp);
       return FORMAT_WIDTH_1;
 
     case '.':
-      info->precision = 0;
+      specifierdata->precision = 0;
       return FORMAT_PRECISION_1;
 
     case 's':
     case 'I':
     case 'L':
-      info->type = *cp;
+      specifierdata->type = *cp;
       return FORMAT_DONE;
   }
 
@@ -676,16 +707,16 @@ read_width_1(char *cp, FormatInfo *info) {
 }
 
 format_state_t
-read_precision_0(char *cp, FormatInfo *info) {
+read_precision_0(char *cp, FormatSpecifierData *specifierdata) {
   switch (*cp) {
     case '.':
-      info->precision = 0;
+      specifierdata->precision = 0;
       return FORMAT_PRECISION_1;
 
     case 's':
     case 'I':
     case 'L':
-      info->type = *cp;
+      specifierdata->type = *cp;
       return FORMAT_DONE;
   }
 
@@ -698,18 +729,18 @@ read_precision_0(char *cp, FormatInfo *info) {
 }
 
 format_state_t
-read_precision_1(char *cp, FormatInfo *info) {
+read_precision_1(char *cp, FormatSpecifierData *specifierdata) {
   switch (*cp) {
     case '0': case '1': case '2': case '3':
     case '4': case '5': case '6':
     case '7': case '8': case '9':
-      accumulate_number(&info->precision, *cp);
+      accumulate_number(&specifierdata->precision, *cp);
       return FORMAT_WIDTH_1;
 
     case 's':
     case 'I':
     case 'L':
-      info->type = *cp;
+      specifierdata->type = *cp;
       return FORMAT_DONE;
   }
 
@@ -804,7 +835,7 @@ GetAttributeAndTypeByName(HeapTupleHeader tuple, const char *attname, Oid *attty
         return result;
 }
 
-void make_argument_data(ArgumentData *argdata, FunctionCallInfo fcinfo) {
+void make_argument_data(FormatargInfoData *arginfodata, FunctionCallInfo fcinfo) {
 	bool		funcvariadic;
 	int			nargs;
 	Datum	   *elements = NULL;
@@ -860,9 +891,9 @@ void make_argument_data(ArgumentData *argdata, FunctionCallInfo fcinfo) {
 		funcvariadic = false;
 	}
 
-        argdata->funcvariadic = funcvariadic;
-        argdata->nargs = nargs;
-        argdata->elements = elements;
-        argdata->nulls = nulls;
-        argdata->element_type = element_type;
+        arginfodata->funcvariadic = funcvariadic;
+        arginfodata->nargs = nargs;
+        arginfodata->elements = elements;
+        arginfodata->nulls = nulls;
+        arginfodata->element_type = element_type;
 }
