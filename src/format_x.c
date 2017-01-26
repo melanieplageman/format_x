@@ -53,6 +53,8 @@ typedef struct {
   Oid hstoreOid;
 } FormatargInfoData;
 
+/* This struct holds, eventually, the value to be written in place of a given format specifier in the output string. */
+/* It is created initially from the argument corresponding to that specifier. */
 typedef struct {
   Datum item;
   Oid typid;
@@ -237,9 +239,8 @@ Datum format_x(PG_FUNCTION_ARGS) {
 
 void format_engine(FormatSpecifierData *specifierdata, StringInfoData *output, FormatargInfoData *arginfodata) {
   Object object;
-  bool typIsVarlena;
+  Oid prev_typid = InvalidOid;
   FmgrInfo typoutputfinfo;
-  Oid typoutputfunc;
   char *val;
   int vallen;
 
@@ -285,8 +286,14 @@ void format_engine(FormatSpecifierData *specifierdata, StringInfoData *output, F
     }
 
     /* Get the appropriate typOutput function */
-    getTypeOutputInfo(object.typid, &typoutputfunc, &typIsVarlena);
-    fmgr_info(typoutputfunc, &typoutputfinfo);
+    if (object.typid != prev_typid) {
+      bool typIsVarlena;
+      Oid typoutputfunc;
+
+      getTypeOutputInfo(object.typid, &typoutputfunc, &typIsVarlena);
+      fmgr_info(typoutputfunc, &typoutputfinfo);
+      prev_typid = object.typid;
+    }
 
     val = OutputFunctionCall(&typoutputfinfo, object.item);
   }
