@@ -59,6 +59,12 @@ typedef struct {
   bool isNull;
 } Object;
 
+/* Read contiguous digits as a decimal number */
+static bool format_read_digits(char **cpp, char *endp, int *number);
+
+/* Read a format specifier (generally following the SUS printf specification) */
+static char *format_read_specifier(char *cp, char *endp, FormatSpecifierData *spec);
+
 /* Returns a formatted string when provided with named arguments */
 void format_engine(FormatSpecifierData *specifierdata, StringInfoData *output, FormatargInfoData *arginfodata);
 
@@ -79,9 +85,6 @@ void make_argument_data(FormatargInfoData *arginfodata, FunctionCallInfo fcinfo)
 /* Consume an FormatargInfoData and a position and return the datum at that position */
 Datum getarg(FormatargInfoData *arginfodata, int parameter, Oid *typid, bool *isNull);
 
-/* Copied from text_format_parse_digits() */
-static inline void accumulate_number(int *old, char c);
-
 /* Check if typid belongs to hstore as hstore's oid is not constant */
 bool is_hstore(Oid typid, FormatargInfoData *arginfodata);
 
@@ -95,40 +98,20 @@ static JsonbValue *findJsonbValueFromContainerLen(JsonbContainer *container,
 /* For typid; GetAttributeByName() does not provide typid */
 Datum GetAttributeAndTypeByName(HeapTupleHeader tuple, const char *attname, Oid *atttypid, bool *isNull);
 
-typedef enum _format_state_t {
-  FORMAT_NORMAL,
-  FORMAT_PARAMETER_0,
-  FORMAT_PARAMETER_1,
-  FORMAT_PARAMETER_2,
-  FORMAT_PARAMETER_3,
-  FORMAT_FLAGS,
-  FORMAT_WIDTH_0,
-  FORMAT_WIDTH_1,
-  FORMAT_PRECISION_0,
-  FORMAT_PRECISION_1,
-  FORMAT_DONE,
-  FORMAT_UNEXPECTED,
-} format_state_t;
-
-format_state_t read_parameter_0(char* cp, FormatSpecifierData *specifierdata);
-format_state_t read_parameter_1(char *cp, FormatSpecifierData *specifierdata);
-format_state_t read_parameter_2(char *cp, FormatSpecifierData *specifierdata);
-format_state_t read_parameter_3(char *cp, FormatSpecifierData *specifierdata);
-format_state_t read_flags(char *cp, FormatSpecifierData *specifierdata);
-format_state_t read_width_0(char *cp, FormatSpecifierData *specifierdata);
-format_state_t read_width_1(char *cp, FormatSpecifierData *specifierdata);
-format_state_t read_precision_0(char *cp, FormatSpecifierData *specifierdata);
-format_state_t read_precision_1(char *cp, FormatSpecifierData *specifierdata);
+#define ADVANCE_READ_POINTER(cp, endp) do { \
+  if (++(cp) >= (endp)) \
+    ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), \
+		    errmsg("unterminated format_x() type specifier"), \
+		    errhint("For a single \"%%\" use \"%%%%\"."))); \
+} while (0)
 
 Datum format_x(PG_FUNCTION_ARGS) {
   text *format_string_text;
   char *cp, *startp, *endp;
-  format_state_t s = FORMAT_NORMAL;
-  format_state_t next;
   int last_parameter = 0;
   FormatargInfoData arginfodata = {
     .fcinfo = fcinfo };
-  FormatSpecifierData specifierdata;
+  FormatSpecifierData spec;
   StringInfoData output;
 
   /* When format string is null, immediately return null */
@@ -148,91 +131,175 @@ Datum format_x(PG_FUNCTION_ARGS) {
 
   initStringInfo(&output);
 
+  /* Scan format string looking for format specifiers */
   for (cp = startp; cp < endp; cp++) {
-    switch (s) {
-      case FORMAT_NORMAL:
-        if (*cp != '%') {
-          appendStringInfoCharMacro(&output, *cp);
-          continue;
-        }
+    /* If it's not the start of a format specifier just copy it to output */
+    if (*cp != '%') {
+      appendStringInfoCharMacro(&output, *cp);
+      continue;
+    }
+    ADVANCE_READ_POINTER(cp, endp);
 
-        next = FORMAT_PARAMETER_0;
-        break;
-      case FORMAT_PARAMETER_0:
-        if (*cp == '%') {
-          appendStringInfoCharMacro(&output, *cp);
-          next = FORMAT_NORMAL;
-        } else {
-          specifierdata.parameter = 0;
-          specifierdata.key = NULL;
-          specifierdata.keylen = 0;
-          specifierdata.flag = 0;
-          specifierdata.width = 0;
-          specifierdata.precision = 0;
-
-          next = read_parameter_0(cp, &specifierdata);
-        }
-        break;
-      case FORMAT_PARAMETER_1:
-        next = read_parameter_1(cp, &specifierdata);
-        break;
-      case FORMAT_PARAMETER_2:
-        next = read_parameter_2(cp, &specifierdata);
-        break;
-      case FORMAT_PARAMETER_3:
-        next = read_parameter_3(cp, &specifierdata);
-        break;
-      case FORMAT_FLAGS:
-        next = read_flags(cp, &specifierdata);
-        break;
-      case FORMAT_WIDTH_0:
-        next = read_width_0(cp, &specifierdata);
-        break;
-      case FORMAT_WIDTH_1:
-        next = read_width_1(cp, &specifierdata);
-        break;
-      case FORMAT_PRECISION_0:
-        next = read_precision_0(cp, &specifierdata);
-        break;
-      case FORMAT_PRECISION_1:
-        next = read_precision_1(cp, &specifierdata);
-        break;
-      default:
-        next = FORMAT_UNEXPECTED;
-        break;
+    /* Easy case: %% outputs a single % */
+    if (*cp == '%') {
+      appendStringInfoCharMacro(&output, '%');
+      continue;
     }
 
-    if (next == FORMAT_UNEXPECTED)
-      elog(ERROR, "ERROR");
+    cp = format_read_specifier(cp, endp, &spec);
 
-    if (next == FORMAT_DONE) {
-      if (specifierdata.parameter != 0) {
-        last_parameter = specifierdata.parameter;
-      } else {
-        if (specifierdata.key == NULL || specifierdata.keylen == 0) {
-          specifierdata.parameter = ++last_parameter;
-        } else {
-          if (last_parameter == 0)
-            last_parameter++;
-          specifierdata.parameter = last_parameter;
-        }
+    if (spec.parameter == 0) {
+      if (spec.key == NULL || spec.keylen == 0)
+        spec.parameter = ++last_parameter;
+      else {
+        if (last_parameter == 0)
+          last_parameter++;
+        spec.parameter = last_parameter;
       }
-      format_engine(&specifierdata, &output, &arginfodata);
-      next = FORMAT_NORMAL;
-    }
+    } else last_parameter = spec.parameter;
 
-    s = next;
+    format_engine(&spec, &output, &arginfodata);
   }
-
-  if (s != FORMAT_NORMAL)
-    ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                    errmsg("unterminated format_x() type specifier"),
-                    errhint("For a single \"%%\" use \"%%%%\".")));
 
   text *output_text;
   output_text = cstring_to_text_with_len(output.data, output.len);
   pfree(output.data);
   PG_RETURN_TEXT_P(output_text);
+}
+
+/*
+ * Read contiguous digits as a decimal number.
+ *
+ * Returns true if some digits could be read.
+ * The number is returned into *number, and *cpp is advanced to the next
+ * character to be read.
+ *
+ * Note parsing invariant: at least one character is known to be available
+ * before string end (endp) at entry, and this is still true at exit.
+ */
+static bool format_read_digits(char **cpp, char *endp, int *number) {
+  bool found = false;
+  int old = 0;
+
+  while (**cpp >= '0' && **cpp <= '9') {
+    int new = old * 10 + (**cpp - '0');
+
+    if (new / 10 != old) /* overflow? */
+      ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+                      errmsg("number is out of range")));
+    old = new;
+
+    ADVANCE_READ_POINTER(*cpp, endp);
+    found = true;
+  }
+
+  *number = old;
+  return found;
+}
+
+/*
+ * Read a format specifier (generally following the SUS printf specification).
+ *
+ * We have already advanced over the initial '%', and we are looking for
+ * [parameter][(key)][flags][width]type.
+ *
+ * Inputs are cp (the position after '%') and endp (string end + 1).
+ *
+ * The format specifier details are returned in *spec.
+ *
+ * The function result is the last character position to be read, ie, the
+ * location where the type character is.
+ *
+ * Note parsing invariant: at least one character is known to be available
+ * before string end (endp) at entry, and this is still true at exit.
+ */
+static char *
+format_read_specifier(char *cp, char *endp, FormatSpecifierData *spec) {
+  int number;
+
+  /* Set defaults for output specifier data */
+  *spec = (FormatSpecifierData) {
+    .parameter = 0,
+    .key = NULL,
+    .keylen = 0,
+    .flag = 0,
+    .width = 0,
+    .precision = 0,
+  };
+
+  if (format_read_digits(&cp, endp, &number)) {
+    if (*cp != '$' && *cp != '(') {
+      /* The number isn't argument position so assume it's width and skip
+       * everything before precision */
+      spec->width = number;
+      goto format_read_precision;
+    }
+
+    /* The number was argument position */
+    spec->parameter = number;
+
+    /* Explicit 0 for argument index is immediately refused */
+    if (number == 0)
+      ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                      errmsg("format specifies argument 0, but arguments are numbered from 1")));
+  }
+
+  /* There are only two possibilities at this point: either we just read a
+   * number or we didn't. Since we use spec->parameter = 0 to indicate an
+   * implicit parameter reference then anything else indicates that we just
+   * read a number.
+   *
+   * The '$' is only allowed here if we just read a number and its presence
+   * excludes the presence of a key. */
+
+  if (*cp == '$' && spec->parameter > 0) {
+    ADVANCE_READ_POINTER(cp, endp);
+  } else if (*cp == '(') {
+    /* The character after this must be the start of the key */
+    ADVANCE_READ_POINTER(cp, endp);
+    spec->key = cp;
+
+    while (*cp != ')') {
+      if (*cp == '(')
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                        errmsg("key cannot contain '('")));
+      ADVANCE_READ_POINTER(cp, endp);
+    }
+
+    /* At this point cp points immediately after the key end */
+    spec->keylen = cp - spec->key;
+    ADVANCE_READ_POINTER(cp, endp);
+  }
+
+  /* Handle flags (only minus is supported now) */
+  while (*cp == '-') {
+    /* spec->flags |= FORMAT_FLAG_MINUS; */
+    spec->flag = 1;
+    ADVANCE_READ_POINTER(cp, endp);
+  }
+
+  /* Check for direct width specification */
+  if (format_read_digits(&cp, endp, &number))
+    spec->width = number;
+
+format_read_precision:
+  if (*cp == '.') {
+    ADVANCE_READ_POINTER(cp, endp);
+
+    if (!format_read_digits(&cp, endp, &spec->precision))
+      ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                      errmsg(". must be followed by precision")));
+  }
+
+  /* Handle type (either 's', 'I', or 'L') */
+  if (strchr("sIL", *cp) == NULL)
+    ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                    errmsg("unrecognized format_x() type specifier \"%c\"",
+                            *cp),
+                    errhint("For a single \"%%\" use \"%%%%\".")));
+  spec->type = *cp;
+
+  return cp;
 }
 
 void format_engine(FormatSpecifierData *specifierdata, StringInfoData *output, FormatargInfoData *arginfodata) {
@@ -490,279 +557,6 @@ Datum getarg(FormatargInfoData *arginfodata, int parameter, Oid *typid, bool *is
   }
 
   return arg;
-}
-
-
-format_state_t
-read_parameter_0(char* cp, FormatSpecifierData *specifierdata) {
-  switch (*cp) {
-    case '0':
-      /* Explicit 0 for argument index is immediately refused */
-      ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                      errmsg("format_x specifies argument 0, but arguments are numbered from 1")));
-      return FORMAT_UNEXPECTED;
-
-    case '1': case '2': case '3':
-    case '4': case '5': case '6':
-    case '7': case '8': case '9':
-      specifierdata->parameter = *cp - '0';
-      return FORMAT_PARAMETER_1;
-
-    case '(':
-      specifierdata->key = cp + 1;
-      return FORMAT_PARAMETER_2;
-
-    case '-':
-      specifierdata->flag = true;
-      return FORMAT_FLAGS;
-
-    case '.':
-      specifierdata->precision = 0;
-      return FORMAT_PRECISION_1;
-
-    case 's':
-    case 'I':
-    case 'L':
-      specifierdata->type = *cp;
-      return FORMAT_DONE;
-  }
-
-  ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                  errmsg("unrecognized format_x() type specifier \"%c\"",
-                         *cp),
-                  errhint("For a single \"%%\" use \"%%%%\".")));
-  return FORMAT_UNEXPECTED;
-}
-
-format_state_t
-read_parameter_1(char *cp, FormatSpecifierData *specifierdata) {
-  switch (*cp) {
-    case '0': case '1': case '2': case '3':
-    case '4': case '5': case '6':
-    case '7': case '8': case '9':
-      accumulate_number(&specifierdata->parameter, *cp);
-      return FORMAT_PARAMETER_1;
-
-    case '(':
-      specifierdata->key = cp + 1;
-      return FORMAT_PARAMETER_2;
-
-    case '$':
-      return FORMAT_PARAMETER_3;
-
-    case '.':
-      specifierdata->width = specifierdata->parameter;
-      specifierdata->parameter = 0;
-      specifierdata->precision = 0;
-      return FORMAT_PRECISION_1;
-
-    case 's':
-    case 'I':
-    case 'L':
-      specifierdata->width = specifierdata->parameter;
-      specifierdata->parameter = 0;
-      specifierdata->type = *cp;
-      return FORMAT_DONE;
-  }
-
-  ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                  errmsg("unrecognized format_x() type specifier \"%c\"",
-                         *cp),
-                  errhint("For a single \"%%\" use \"%%%%\".")));
-
-  return FORMAT_UNEXPECTED;
-}
-
-format_state_t
-read_parameter_2(char *cp, FormatSpecifierData *specifierdata) {
-  switch (*cp) {
-    case ')':
-      return FORMAT_PARAMETER_3;
-
-    case '(':
-      ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                      errmsg("key cannot contain '('")));
-      return FORMAT_UNEXPECTED;
-
-    default:
-      specifierdata->keylen++;
-  }
-
-  return FORMAT_PARAMETER_2;
-}
-
-format_state_t
-read_parameter_3(char *cp, FormatSpecifierData *specifierdata) {
-  switch (*cp) {
-    case '-':
-      specifierdata->flag = true;
-      return FORMAT_FLAGS;
-
-    case '1': case '2': case '3':
-    case '4': case '5': case '6':
-    case '7': case '8': case '9':
-      specifierdata->width = *cp - '0';
-      return FORMAT_WIDTH_1;
-
-    case '.':
-      specifierdata->precision = 0;
-      return FORMAT_PRECISION_1;
-
-    case 's':
-    case 'I':
-    case 'L':
-      specifierdata->type = *cp;
-      return FORMAT_DONE;
-  }
-
-  ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                  errmsg("unrecognized format_x() type specifier \"%c\"",
-                         *cp),
-                  errhint("For a single \"%%\" use \"%%%%\".")));
-
-  return FORMAT_PARAMETER_2;
-}
-
-format_state_t
-read_flags(char *cp, FormatSpecifierData *specifierdata) {
-  switch (*cp) {
-    case '-':
-      specifierdata->flag = true;
-      return FORMAT_FLAGS;
-
-    case '1': case '2': case '3':
-    case '4': case '5': case '6':
-    case '7': case '8': case '9':
-      specifierdata->width = *cp - '0';
-      return FORMAT_WIDTH_1;
-
-    case '.':
-      specifierdata->precision = 0;
-      return FORMAT_PRECISION_1;
-
-    case 's':
-    case 'I':
-    case 'L':
-      specifierdata->type = *cp;
-      return FORMAT_DONE;
-  }
-
-  ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                  errmsg("unrecognized format_x() type specifier \"%c\"",
-                         *cp),
-                  errhint("For a single \"%%\" use \"%%%%\".")));
-
-  return FORMAT_UNEXPECTED;
-}
-
-format_state_t
-read_width_0(char *cp, FormatSpecifierData *specifierdata) {
-  switch (*cp) {
-    case '1': case '2': case '3':
-    case '4': case '5': case '6':
-    case '7': case '8': case '9':
-      specifierdata->width = *cp - '0';
-      return FORMAT_WIDTH_1;
-
-    case '.':
-      specifierdata->precision = 0;
-      return FORMAT_PRECISION_1;
-
-    case 's':
-    case 'I':
-    case 'L':
-      specifierdata->type = *cp;
-      return FORMAT_DONE;
-  }
-
-  ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                  errmsg("unrecognized format_x() type specifier \"%c\"",
-                         *cp),
-                  errhint("For a single \"%%\" use \"%%%%\".")));
-
-  return FORMAT_UNEXPECTED;
-}
-
-format_state_t
-read_width_1(char *cp, FormatSpecifierData *specifierdata) {
-  switch (*cp) {
-    case '0': case '1': case '2': case '3':
-    case '4': case '5': case '6':
-    case '7': case '8': case '9':
-      accumulate_number(&specifierdata->width, *cp);
-      return FORMAT_WIDTH_1;
-
-    case '.':
-      specifierdata->precision = 0;
-      return FORMAT_PRECISION_1;
-
-    case 's':
-    case 'I':
-    case 'L':
-      specifierdata->type = *cp;
-      return FORMAT_DONE;
-  }
-
-  ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                  errmsg("unrecognized format_x() type specifier \"%c\"",
-                         *cp),
-                  errhint("For a single \"%%\" use \"%%%%\".")));
-
-  return FORMAT_UNEXPECTED;
-}
-
-format_state_t
-read_precision_0(char *cp, FormatSpecifierData *specifierdata) {
-  switch (*cp) {
-    case '.':
-      specifierdata->precision = 0;
-      return FORMAT_PRECISION_1;
-
-    case 's':
-    case 'I':
-    case 'L':
-      specifierdata->type = *cp;
-      return FORMAT_DONE;
-  }
-
-  ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                  errmsg("unrecognized format_x() type specifier \"%c\"",
-                         *cp),
-                  errhint("For a single \"%%\" use \"%%%%\".")));
-
-  return FORMAT_UNEXPECTED;
-}
-
-format_state_t
-read_precision_1(char *cp, FormatSpecifierData *specifierdata) {
-  switch (*cp) {
-    case '0': case '1': case '2': case '3':
-    case '4': case '5': case '6':
-    case '7': case '8': case '9':
-      accumulate_number(&specifierdata->precision, *cp);
-      return FORMAT_WIDTH_1;
-
-    case 's':
-    case 'I':
-    case 'L':
-      specifierdata->type = *cp;
-      return FORMAT_DONE;
-  }
-
-  ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                  errmsg("unrecognized format_x() type specifier \"%c\"",
-                         *cp),
-                  errhint("For a single \"%%\" use \"%%%%\".")));
-
-  return FORMAT_UNEXPECTED;
-}
-
-static inline void accumulate_number(int *old, char c) {
-  int new = *old * 10 + (c - '0');
-  if (new / 10 != *old) /* overflow? */
-    ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-                    errmsg("number is out of range")));
-  *old = new;
 }
 
 static JsonbValue *
