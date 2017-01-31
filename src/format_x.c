@@ -27,6 +27,10 @@ typedef struct {
   char *key; // NULL indicates no key
   int keylen; // a 0 keylen indicates no key
   bool flag;
+  int width_type;
+  int width_parameter;
+  char *width_key;
+  int width_keylen;
   int width;
   int precision;
   char type;
@@ -72,6 +76,7 @@ void format_engine(FormatSpecifierData *specifierdata, StringInfoData *output, F
 
 /* Lookup an attribute by key (with length keylen) in object */
 /* The result and result type is returned by rewriting members of object */
+static inline void lookup_helper(char *key, int keylen, Object *object, FormatargInfoData *arginfodata);
 void format_lookup(Object *object, FormatargInfoData *arginfodata, char *key, int keylen);
 void record_lookup(Object *object, char *key, int keylen);
 void jsonb_lookup(Object *object, char *key, int keylen);
@@ -226,6 +231,8 @@ format_read_specifier(char *cp, char *endp, FormatSpecifierData *spec) {
     .keylen = 0,
     .flag = 0,
     .width = 0,
+    .width_type = 0,
+    .width_parameter = 0,
     .precision = 0,
   };
 
@@ -304,6 +311,25 @@ format_read_precision:
   return cp;
 }
 
+static inline void lookup_helper(char *key, int keylen, Object *object, FormatargInfoData *arginfodata) {
+  char *keycpy = palloc(keylen + 1);
+  keycpy[keylen] = '\0';
+  memcpy(keycpy, key, keylen);
+
+  size_t numchars = 0;
+  for (size_t i = 0; i <= keylen; i++) {
+    if (keycpy[i] == '.' || i == keylen) {
+      keycpy[i] = '\0';
+      format_lookup(object, arginfodata, keycpy, numchars);
+      keycpy = keycpy + numchars + 1;
+      numchars = 0;
+    }
+    else {
+      numchars++;
+    }
+  }
+}
+
 void format_engine(FormatSpecifierData *specifierdata, StringInfoData *output, FormatargInfoData *arginfodata) {
   Object object;
   Oid prev_typid = InvalidOid;
@@ -316,22 +342,7 @@ void format_engine(FormatSpecifierData *specifierdata, StringInfoData *output, F
 
   /* Handle lookup if there is a key */
   if (specifierdata->key != NULL || specifierdata->keylen != 0) {
-    char *keycpy = palloc(specifierdata->keylen + 1);
-    keycpy[specifierdata->keylen] = '\0';
-    memcpy(keycpy, specifierdata->key, specifierdata->keylen);
-
-    size_t numchars = 0;
-    for (size_t i = 0; i <= specifierdata->keylen; i++) {
-      if (keycpy[i] == '.' || i == specifierdata->keylen) {
-        keycpy[i] = '\0';
-        format_lookup(&object, arginfodata, keycpy, numchars);
-        keycpy = keycpy + numchars + 1;
-        numchars = 0;
-      }
-      else {
-        numchars++;
-      }
-    }
+    lookup_helper(specifierdata->key, specifierdata->keylen, &object, arginfodata);
   }
 
   if (object.isNull) {
@@ -347,6 +358,25 @@ void format_engine(FormatSpecifierData *specifierdata, StringInfoData *output, F
     }
   }
   else {
+    /* Handle indirect width */
+    if (specifierdata->width_type > 0) {
+      Object width_object;
+      width_object.isNull = false;
+      width_object.item =  getarg(arginfodata, specifierdata->width_parameter, &width_object.typid, &width_object.isNull);
+      // TODO: check if width_typid is a number
+      if (specifierdata->width_type > 2) {
+        elog(ERROR, "Internal error: indirect width value may not exceed 2");
+      }
+      else if (specifierdata->width_type == 2 && (specifierdata->width_key != NULL || specifierdata->width_keylen != 0)) {
+        lookup_helper(specifierdata->width_key, specifierdata->width_keylen, &width_object, arginfodata);
+      }
+
+      if (width_object.isNull) {
+        ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("indirect width specifier requires a corresponding non-null parameter")));
+      }
+      specifierdata->width = width_object.item;
+    }
+
     /* For floats, trim if precision (precision is only formatting done before conversion to string) */
     if (specifierdata->precision != 0 && (object.typid == FLOAT4OID || object.typid == FLOAT8OID)) {
       object.item = DirectFunctionCall2(numeric_round, object.item, specifierdata->precision);
