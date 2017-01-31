@@ -85,7 +85,7 @@ ERROR:  too few arguments for format_x()
 select format_x('%1$s %13$s', 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
 ERROR:  too few arguments for format_x()
 select format_x('%0$s', 'Hello');
-ERROR:  format_x specifies argument 0, but arguments are numbered from 1
+ERROR:  format specifies argument 0, but arguments are numbered from 1
 /* select format_x('%*0$s', 'Hello'); */
 select format_x('%1$', 1);
 ERROR:  unterminated format_x() type specifier
