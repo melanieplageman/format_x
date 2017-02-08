@@ -230,9 +230,11 @@ format_read_specifier(char *cp, char *endp, FormatSpecifierData *spec) {
     .key = NULL,
     .keylen = 0,
     .flag = 0,
-    .width = 0,
     .width_type = 0,
     .width_parameter = 0,
+    .width_key = NULL,
+    .width_keylen = 0,
+    .width = 0,
     .precision = 0,
   };
 
@@ -287,9 +289,48 @@ format_read_specifier(char *cp, char *endp, FormatSpecifierData *spec) {
     ADVANCE_READ_POINTER(cp, endp);
   }
 
-  /* Check for direct width specification */
-  if (format_read_digits(&cp, endp, &number))
-    spec->width = number;
+  /* Handle indirect width */
+  if (*cp == '*') {
+    ADVANCE_READ_POINTER(cp, endp);
+    spec->width = -1;
+
+    if (format_read_digits(&cp, endp, &number)) {
+      /* Number in this position must be followed by $ or (keys) */
+      if (*cp != '$' && *cp != '(')
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                        errmsg("width argument position must be ended by \"$\" or \"(\"")));
+
+      spec->width_parameter = number;
+
+      /* Explicit 0 for argument index is immediately refused */
+      if (number == 0)
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                        errmsg("format specifies argument 0, but arguments are numbered from 1")));
+
+      ADVANCE_READ_POINTER(cp, endp);
+    }
+
+    if (*cp == '$' && spec->width_parameter > 0) {
+      ADVANCE_READ_POINTER(cp, endp);
+    } else if (*cp == '(') {
+      /* The character after this must be the start of the width key */
+      ADVANCE_READ_POINTER(cp, endp);
+      spec->width_key = cp;
+
+      while (*cp != ')') {
+        if (*cp == '(')
+          ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                          errmsg("width key cannot contain '('")));
+        ADVANCE_READ_POINTER(cp, endp);
+      }
+
+      /* At this point cp points immediately after the width key end */
+      spec->width_keylen = cp - spec->width_key;
+      ADVANCE_READ_POINTER(cp, endp);
+    }
+  } else if (format_read_digits(&cp, endp, &number)) {
+    spec->width = number; /* This is a direct width specification */
+  }
 
 format_read_precision:
   if (*cp == '.') {
