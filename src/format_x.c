@@ -386,6 +386,9 @@ void format_engine(FormatSpecifierData *specifierdata, StringInfoData *output, F
   Object object;
   Oid prev_typid = InvalidOid;
   FmgrInfo typoutputfinfo;
+  FmgrInfo typoutputfinfo_width;
+  Object width_object;
+  Oid prev_width_type = InvalidOid;
   char *val;
   int vallen;
 
@@ -411,22 +414,45 @@ void format_engine(FormatSpecifierData *specifierdata, StringInfoData *output, F
   }
   else {
     /* Handle indirect width */
-    if (specifierdata->width_type > 0) {
-      Object width_object;
+    if (specifierdata->width == -1) {
       width_object.isNull = false;
-      width_object.item =  getarg(arginfodata, specifierdata->width_parameter, &width_object.typid, &width_object.isNull);
-      // TODO: check if width_typid is a number
-      if (specifierdata->width_type > 2) {
-        elog(ERROR, "Internal error: indirect width value may not exceed 2");
-      }
-      else if (specifierdata->width_type == 2 && (specifierdata->width_key != NULL || specifierdata->width_keylen != 0)) {
+      width_object.item = getarg(arginfodata, specifierdata->width_parameter, &width_object.typid, &width_object.isNull);
+
+      if (specifierdata->width_key != NULL || specifierdata->width_keylen != 0) {
         lookup_helper(specifierdata->width_key, specifierdata->width_keylen, &width_object, arginfodata);
       }
 
       if (width_object.isNull) {
-        ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("indirect width specifier requires a corresponding non-null parameter")));
+        specifierdata->width = 0;
       }
-      specifierdata->width = width_object.item;
+
+      else if (width_object.typid == INT4OID) {
+        specifierdata->width = DatumGetInt32(width_object.item);
+      }
+      else if (width_object.typid == INT2OID) {
+        specifierdata->width = DatumGetInt16(width_object.item);
+      }
+      else {
+        /* For less-usual datatypes, convert to text then to int */
+        char	   *str;
+
+        if (width_object.typid != prev_width_type)
+        {
+                Oid			typoutputfunc;
+                bool		typIsVarlena;
+
+                getTypeOutputInfo(width_object.typid, &typoutputfunc, &typIsVarlena);
+                fmgr_info(typoutputfunc, &typoutputfinfo_width);
+                prev_width_type = width_object.typid;
+        }
+
+        str = OutputFunctionCall(&typoutputfinfo_width, width_object.item);
+
+        /* pg_atoi will complain about bad data or overflow */
+        specifierdata->width = pg_atoi(str, sizeof(int), '\0');
+
+        pfree(str);
+      }
     }
 
     /* For floats, trim if precision (precision is only formatting done before conversion to string) */
