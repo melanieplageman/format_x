@@ -164,6 +164,19 @@ Datum format_x(PG_FUNCTION_ARGS) {
       }
     } else last_parameter = spec.parameter;
 
+    /* The width was specified indirectly */
+    if (spec.width == -1) {
+      if (spec.width_parameter == 0) {
+        if (spec.width_key == NULL || spec.width_keylen == 0)
+          spec.width_parameter = ++last_parameter;
+        else {
+          if (last_parameter == 0)
+            last_parameter++;
+          spec.width_parameter = last_parameter;
+        }
+      } else last_parameter = spec.width_parameter;
+    }
+
     format_engine(&spec, &output, &arginfodata);
   }
 
