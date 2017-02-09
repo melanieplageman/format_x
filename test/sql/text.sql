@@ -23,7 +23,7 @@ select format_x('%1$s %12$s', 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
 select format_x('%1$s %4$s', 1, 2, 3);
 select format_x('%1$s %13$s', 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
 select format_x('%0$s', 'Hello');
-/* select format_x('%*0$s', 'Hello'); */
+select format_x('%*0$s', 'Hello');
 select format_x('%1$', 1);
 select format_x('%1$1', 1);
 -- check mix of positional and ordered placeholders
@@ -51,12 +51,12 @@ select format_x('>>%-10s<<', 'Hello');
 select format_x('>>%-10s<<', NULL);
 select format_x('>>%1$10s<<', 'Hello');
 select format_x('>>%1$-10I<<', 'Hello');
-/* select format_x('>>%2$*1$L<<', 10, 'Hello'); */
-/* select format_x('>>%2$*1$L<<', 10, NULL); */
-/* select format_x('>>%2$*1$L<<', -10, NULL); */
-/* select format_x('>>%*s<<', 10, 'Hello'); */
-/* select format_x('>>%*1$s<<', 10, 'Hello'); */
+select format_x('>>%2$*1$L<<', 10, 'Hello');
+select format_x('>>%2$*1$L<<', 10, NULL);
+select format_x('>>%2$*1$L<<', -10, NULL);
+select format_x('>>%*s<<', 10, 'Hello');
+select format_x('>>%*1$s<<', 10, 'Hello');
 select format_x('>>%-s<<', 'Hello');
 select format_x('>>%10L<<', NULL);
-/* select format_x('>>%2$*1$L<<', NULL, 'Hello'); */
-/* select format_x('>>%2$*1$L<<', 0, 'Hello'); */
+select format_x('>>%2$*1$L<<', NULL, 'Hello');
+select format_x('>>%2$*1$L<<', 0, 'Hello');

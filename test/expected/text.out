@@ -86,7 +86,8 @@ select format_x('%1$s %13$s', 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
 ERROR:  too few arguments for format_x()
 select format_x('%0$s', 'Hello');
 ERROR:  format specifies argument 0, but arguments are numbered from 1
-/* select format_x('%*0$s', 'Hello'); */
+select format_x('%*0$s', 'Hello');
+ERROR:  format specifies argument 0, but arguments are numbered from 1
 select format_x('%1$', 1);
 ERROR:  unterminated format_x() type specifier
 HINT:  For a single "%" use "%%".
@@ -208,11 +209,36 @@ select format_x('>>%1$-10I<<', 'Hello');
  >>"Hello"   <<
 (1 row)
 
-/* select format_x('>>%2$*1$L<<', 10, 'Hello'); */
-/* select format_x('>>%2$*1$L<<', 10, NULL); */
-/* select format_x('>>%2$*1$L<<', -10, NULL); */
-/* select format_x('>>%*s<<', 10, 'Hello'); */
-/* select format_x('>>%*1$s<<', 10, 'Hello'); */
+select format_x('>>%2$*1$L<<', 10, 'Hello');
+    format_x    
+----------------
+ >>   'Hello'<<
+(1 row)
+
+select format_x('>>%2$*1$L<<', 10, NULL);
+    format_x     
+----------------
+ >>      NULL<<
+(1 row)
+
+select format_x('>>%2$*1$L<<', -10, NULL);
+    format_x     
+----------------
+ >>NULL      <<
+(1 row)
+
+select format_x('>>%*s<<', 10, 'Hello');
+    format_x     
+----------------
+ >>     Hello<<
+(1 row)
+
+select format_x('>>%*1$s<<', 10, 'Hello');
+    format_x     
+----------------
+ >>     Hello<<
+(1 row)
+
 select format_x('>>%-s<<', 'Hello');
  format_x  
 -----------
@@ -225,5 +251,15 @@ select format_x('>>%10L<<', NULL);
  >>      NULL<<
 (1 row)
 
-/* select format_x('>>%2$*1$L<<', NULL, 'Hello'); */
-/* select format_x('>>%2$*1$L<<', 0, 'Hello'); */
+select format_x('>>%2$*1$L<<', NULL, 'Hello');
+  format_x   
+-------------
+ >>'Hello'<<
+(1 row)
+
+select format_x('>>%2$*1$L<<', 0, 'Hello');
+  format_x   
+-------------
+ >>'Hello'<<
+(1 row)
+
