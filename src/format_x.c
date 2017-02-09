@@ -27,7 +27,6 @@ typedef struct {
   char *key; // NULL indicates no key
   int keylen; // a 0 keylen indicates no key
   bool flag;
-  int width_type;
   int width_parameter;
   char *width_key;
   int width_keylen;
@@ -230,7 +229,6 @@ format_read_specifier(char *cp, char *endp, FormatSpecifierData *spec) {
     .key = NULL,
     .keylen = 0,
     .flag = 0,
-    .width_type = 0,
     .width_parameter = 0,
     .width_key = NULL,
     .width_keylen = 0,
