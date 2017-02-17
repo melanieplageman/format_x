@@ -63,7 +63,13 @@ SELECT format_x('%(n1.code)I, %(n2)L', '{
 SELECT format_x('Hello %*s', '{
   "name": "Melanie", "width": 10}'::JSONB, 40, 'world');
 
+SELECT format_x('Hello %*1$s', '{
+  "name": "Melanie", "width": 10}'::JSONB, 40, 'world');
+
 SELECT format_x('Hello %*(width)s', '{
+  "name": "Melanie", "width": 10}'::JSONB, 40, 'world');
+
+SELECT format_x('Hello %*1(width)s', '{
   "name": "Melanie", "width": 10}'::JSONB, 40, 'world');
 
 SELECT format_x('Hello %2$*s', '{
@@ -76,6 +82,9 @@ SELECT format_x('Hello %2(name)s. Do you like %*s?',
   5, '{"name": "Melanie", "food":"chocolate", "width": 15}'::JSONB, 'spaghetti', 20);
 
 SELECT format_x('Hello %2(name)s. Do you like %*(width)s?',
+  5, '{"name": "Melanie", "food":"chocolate", "width": 15}'::JSONB, 'spaghetti', 20);
+
+SELECT format_x('Hello %2(name)s. Do you like %(food)*(width)s?',
   5, '{"name": "Melanie", "food":"chocolate", "width": 15}'::JSONB, 'spaghetti', 20);
 
 SELECT format_x('Hello %(name)*(width)s. Do you like %*s?',

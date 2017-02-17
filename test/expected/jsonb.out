@@ -118,41 +118,50 @@ SELECT format_x('%(n1.code)I, %(n2)L', '{
 -- JSONB with indirect width --
 SELECT format_x('Hello %*s', '{
   "name": "Melanie", "width": 10}'::JSONB, 40, 'world');
-                    format_x                    
-------------------------------------------------
- Hello         {"name": "Melanie", "width": 10}
-(1 row)
-
+ERROR:  invalid input syntax for integer: "{"name": "Melanie", "width": 10}"
+SELECT format_x('Hello %*1$s', '{
+  "name": "Melanie", "width": 10}'::JSONB, 40, 'world');
+ERROR:  invalid input syntax for integer: "{"name": "Melanie", "width": 10}"
 SELECT format_x('Hello %*(width)s', '{
   "name": "Melanie", "width": 10}'::JSONB, 40, 'world');
-                format_x                
-----------------------------------------
- Hello {"name": "Melanie", "width": 10}
+     format_x     
+------------------
+ Hello         40
+(1 row)
+
+SELECT format_x('Hello %*1(width)s', '{
+  "name": "Melanie", "width": 10}'::JSONB, 40, 'world');
+     format_x     
+------------------
+ Hello         40
 (1 row)
 
 SELECT format_x('Hello %2$*s', '{
   "name": "Melanie", "width": 10}'::JSONB, 40, 'world');
-ERROR:  invalid input syntax for integer: "world"
+ERROR:  invalid input syntax for integer: "{"name": "Melanie", "width": 10}"
 SELECT format_x('Hello %1$*(width)s',
   10, '{"name": "Melanie", "width": 10}'::JSONB, 'world');
 ERROR:  Invalid argument type for key "width"
 SELECT format_x('Hello %2(name)s. Do you like %*s?',
   5, '{"name": "Melanie", "food":"chocolate", "width": 15}'::JSONB, 'spaghetti', 20);
-                     format_x                     
---------------------------------------------------
- Hello Melanie. Do you like            spaghetti?
-(1 row)
-
+ERROR:  invalid input syntax for integer: "spaghetti"
 SELECT format_x('Hello %2(name)s. Do you like %*(width)s?',
   5, '{"name": "Melanie", "food":"chocolate", "width": 15}'::JSONB, 'spaghetti', 20);
-ERROR:  Invalid argument type for key "width"
-SELECT format_x('Hello %(name)*(width)s. Do you like %*s?',
-  '{"name": "Melanie", "food":"chocolate", "width": 15}'::JSONB, 'spaghetti', 20);
-                         format_x                         
-----------------------------------------------------------
- Hello         Melanie. Do you like            spaghetti?
+                  format_x                   
+---------------------------------------------
+ Hello Melanie. Do you like       spaghetti?
 (1 row)
 
+SELECT format_x('Hello %2(name)s. Do you like %(food)*(width)s?',
+  5, '{"name": "Melanie", "food":"chocolate", "width": 15}'::JSONB, 'spaghetti', 20);
+                  format_x                   
+---------------------------------------------
+ Hello Melanie. Do you like       chocolate?
+(1 row)
+
+SELECT format_x('Hello %(name)*(width)s. Do you like %*s?',
+  '{"name": "Melanie", "food":"chocolate", "width": 15}'::JSONB, 'spaghetti', 20);
+ERROR:  invalid input syntax for integer: "spaghetti"
 -- Composite type with nested JSONB attribute --
 CREATE TABLE description(name TEXT, data JSONB);
 INSERT INTO description VALUES
