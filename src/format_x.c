@@ -27,10 +27,10 @@ typedef struct {
   char *key; // NULL indicates no key
   int keylen; // a 0 keylen indicates no key
   bool flag;
-  int width_parameter;
-  char *width_key;
-  int width_keylen;
-  int width;
+  int width_parameter; // a 0 indicates no parameter
+  char *width_key; // NULL if direct width
+  int width_keylen; // a 0 if direct width
+  int width; // a -1 indicates indirect width
   int precision;
   char type;
 } FormatSpecifierData;
@@ -154,15 +154,6 @@ Datum format_x(PG_FUNCTION_ARGS) {
 
     cp = format_read_specifier(cp, endp, &spec);
 
-    if (spec.parameter == 0) {
-      if (spec.key == NULL || spec.keylen == 0)
-        spec.parameter = ++last_parameter;
-      else {
-        if (last_parameter == 0)
-          last_parameter++;
-        spec.parameter = last_parameter;
-      }
-    } else last_parameter = spec.parameter;
 
     /* The width was specified indirectly */
     if (spec.width == -1) {
@@ -176,6 +167,15 @@ Datum format_x(PG_FUNCTION_ARGS) {
         }
       } else last_parameter = spec.width_parameter;
     }
+    if (spec.parameter == 0) {
+      if (spec.key == NULL || spec.keylen == 0)
+        spec.parameter = ++last_parameter;
+      else {
+        if (last_parameter == 0)
+          last_parameter++;
+        spec.parameter = last_parameter;
+      }
+    } else last_parameter = spec.parameter;
 
     format_engine(&spec, &output, &arginfodata);
   }
@@ -317,8 +317,6 @@ format_read_specifier(char *cp, char *endp, FormatSpecifierData *spec) {
       if (number == 0)
         ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                         errmsg("format specifies argument 0, but arguments are numbered from 1")));
-
-      ADVANCE_READ_POINTER(cp, endp);
     }
 
     if (*cp == '$' && spec->width_parameter > 0) {
@@ -412,49 +410,55 @@ void format_engine(FormatSpecifierData *specifierdata, StringInfoData *output, F
       val = "";
     }
   }
-  else {
-    /* Handle indirect width */
-    if (specifierdata->width == -1) {
-      width_object.isNull = false;
-      width_object.item = getarg(arginfodata, specifierdata->width_parameter, &width_object.typid, &width_object.isNull);
 
-      if (specifierdata->width_key != NULL || specifierdata->width_keylen != 0) {
-        lookup_helper(specifierdata->width_key, specifierdata->width_keylen, &width_object, arginfodata);
-      }
+  /* Handle indirect width */
+  if (specifierdata->width == -1) {
+    width_object.isNull = false;
+    width_object.item = getarg(arginfodata, specifierdata->width_parameter, &width_object.typid, &width_object.isNull);
 
-      if (width_object.isNull) {
-        specifierdata->width = 0;
-      }
-
-      else if (width_object.typid == INT4OID) {
-        specifierdata->width = DatumGetInt32(width_object.item);
-      }
-      else if (width_object.typid == INT2OID) {
-        specifierdata->width = DatumGetInt16(width_object.item);
-      }
-      else {
-        /* For less-usual datatypes, convert to text then to int */
-        char	   *str;
-
-        if (width_object.typid != prev_width_type)
-        {
-                Oid			typoutputfunc;
-                bool		typIsVarlena;
-
-                getTypeOutputInfo(width_object.typid, &typoutputfunc, &typIsVarlena);
-                fmgr_info(typoutputfunc, &typoutputfinfo_width);
-                prev_width_type = width_object.typid;
-        }
-
-        str = OutputFunctionCall(&typoutputfinfo_width, width_object.item);
-
-        /* pg_atoi will complain about bad data or overflow */
-        specifierdata->width = pg_atoi(str, sizeof(int), '\0');
-
-        pfree(str);
-      }
+    if (specifierdata->width_key != NULL || specifierdata->width_keylen != 0) {
+      lookup_helper(specifierdata->width_key, specifierdata->width_keylen, &width_object, arginfodata);
     }
 
+    if (width_object.isNull) {
+      specifierdata->width = 0;
+    }
+
+    else if (width_object.typid == INT4OID) {
+      specifierdata->width = DatumGetInt32(width_object.item);
+    }
+    else if (width_object.typid == INT2OID) {
+      specifierdata->width = DatumGetInt16(width_object.item);
+    }
+    else {
+      /* For less-usual datatypes, convert to text then to int */
+      char	   *str;
+
+      if (width_object.typid != prev_width_type)
+      {
+              Oid			typoutputfunc;
+              bool		typIsVarlena;
+
+              getTypeOutputInfo(width_object.typid, &typoutputfunc, &typIsVarlena);
+              fmgr_info(typoutputfunc, &typoutputfinfo_width);
+              prev_width_type = width_object.typid;
+      }
+
+      str = OutputFunctionCall(&typoutputfinfo_width, width_object.item);
+
+      /* pg_atoi will complain about bad data or overflow */
+      specifierdata->width = pg_atoi(str, sizeof(int), '\0');
+
+      pfree(str);
+    }
+
+    if (specifierdata->width < 0) {
+      specifierdata->flag = 1;
+      specifierdata->width = -specifierdata->width;
+    }
+  }
+
+  if (!object.isNull) {
     /* For floats, trim if precision (precision is only formatting done before conversion to string) */
     if (specifierdata->precision != 0 && (object.typid == FLOAT4OID || object.typid == FLOAT8OID)) {
       object.item = DirectFunctionCall2(numeric_round, object.item, specifierdata->precision);
