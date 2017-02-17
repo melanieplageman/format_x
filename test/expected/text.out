@@ -216,25 +216,25 @@ select format_x('>>%2$*1$L<<', 10, 'Hello');
 (1 row)
 
 select format_x('>>%2$*1$L<<', 10, NULL);
-    format_x     
+    format_x    
 ----------------
  >>      NULL<<
 (1 row)
 
 select format_x('>>%2$*1$L<<', -10, NULL);
-    format_x     
+    format_x    
 ----------------
  >>NULL      <<
 (1 row)
 
 select format_x('>>%*s<<', 10, 'Hello');
-    format_x     
+    format_x    
 ----------------
  >>     Hello<<
 (1 row)
 
 select format_x('>>%*1$s<<', 10, 'Hello');
-    format_x     
+    format_x    
 ----------------
  >>     Hello<<
 (1 row)
