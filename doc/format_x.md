@@ -4,7 +4,7 @@ format_x
 Synopsis
 --------
 
-The function `format_x` produces output formatted according to a format string, in a style similar to the C function `sprintf`. It is an extension of the builtin function `format` as it allows the use of named lookups, e.g.:
+The function `format_x` produces output formatted according to a format string, in a style similar to the C function `sprintf`. It is an extension of the builtin function `format` as it allows the use of lookups, e.g.:
 
 ```sql
 SELECT format_x('Hello %(location)s!', '{"location": "World"}'::JSONB);
