@@ -155,18 +155,6 @@ Datum format_x(PG_FUNCTION_ARGS) {
     cp = format_read_specifier(cp, endp, &spec);
 
 
-    /* The width was specified indirectly */
-    if (spec.width == -1) {
-      if (spec.width_parameter == 0) {
-        if (spec.width_key == NULL || spec.width_keylen == 0)
-          spec.width_parameter = ++last_parameter;
-        else {
-          if (last_parameter == 0)
-            last_parameter++;
-          spec.width_parameter = last_parameter;
-        }
-      } else last_parameter = spec.width_parameter;
-    }
     if (spec.parameter == 0) {
       if (spec.key == NULL || spec.keylen == 0)
         spec.parameter = ++last_parameter;
@@ -176,6 +164,17 @@ Datum format_x(PG_FUNCTION_ARGS) {
         spec.parameter = last_parameter;
       }
     } else last_parameter = spec.parameter;
+
+    /* The width was specified indirectly */
+    if (spec.width == -1) {
+      if (spec.width_parameter == 0) {
+        if (spec.width_key == NULL || spec.width_keylen == 0)
+          spec.width_parameter = ++last_parameter;
+        else {
+          spec.width_parameter = last_parameter;
+        }
+      } else last_parameter = spec.width_parameter;
+    }
 
     format_engine(&spec, &output, &arginfodata);
   }
