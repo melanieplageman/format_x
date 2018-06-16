@@ -7,7 +7,7 @@ TESTS        = $(wildcard test/sql/*.sql)
 REGRESS      = $(patsubst test/sql/%.sql,%,$(sort $(TESTS)))
 REGRESS_OPTS = --inputdir=test --load-language=plpgsql
 MODULES      = $(patsubst %.c,%,$(wildcard src/*.c))
-PG_CONFIG    = pg_config
+PG_CONFIG    = /usr/local/postgres/bin/pg_config
 PG91         = $(shell $(PG_CONFIG) --version | grep -qE " 8\.| 9\.0" && echo no || echo yes)
 
 ifeq ($(PG91),yes)
